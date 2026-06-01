@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[codz]
+*.so
+*.egg-info/
+build/
+dist/
+
+# Virtual envs
+.venv
+venv/
+env/
+
+# uv
+# uv.lock is intentionally NOT ignored - it pins exact versions
+# so the deployed app reproduces locally what we tested.
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Environment variables (API keys live here during local dev)
+.env
+.env.local
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
