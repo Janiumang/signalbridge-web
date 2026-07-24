@@ -749,7 +749,7 @@ cli = [
 [[package]]
 name = "mcp-server-openfda"
 version = "0.1.0"
-source = { git = "https://github.com/Janiumang/mcp-server-openfda.git#2a59c0bf5e53cf4b442285886a95fadbc97a98c4" }
+source = { git = "https://github.com/Janiumang/mcp-server-openfda.git#9d8e105e625316d1e6b4d1938856f6fef8b61549" }
 dependencies = [
     { name = "httpx" },
     { name = "mcp", extra = ["cli"] },
