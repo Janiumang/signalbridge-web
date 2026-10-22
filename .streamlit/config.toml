@@ -1,0 +1,11 @@
+# Shared VigilantAI / SignalBridge palette (vigilant-ui/src/styles/tokens.css)
+[theme]
+base = "light"
+primaryColor = "#2d5a4f"
+backgroundColor = "#f4f7f2"
+secondaryBackgroundColor = "#eef2ec"
+textColor = "#0f172a"
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
