@@ -99,6 +99,7 @@ code, pre, .stCode {{ font-family: var(--sb-mono) !important; }}
 [data-testid="stForm"] {{ border: none; padding: 0; }}
 [data-testid="stVerticalBlockBorderWrapper"] {{ background: rgba(255,255,255,.55); border-color: var(--sb-rule) !important; border-radius: 12px; }}
 [data-testid="stFormSubmitButton"] button {{ background: var(--sb-green) !important; color: #fff !important; border: none !important; font-family: var(--sb-sans) !important; font-weight: 600; font-size: .95rem; }}
+[data-testid="stFormSubmitButton"] button p {{ color: #fff !important; font-family: var(--sb-sans) !important; }}
 [data-testid="stFormSubmitButton"] button:hover {{ background: {GREEN_DARK} !important; color: #fff !important; }}
 .stTextInput input, .stTextArea textarea, [data-baseweb="select"] > div {{ background: var(--sb-card) !important; }}
 
