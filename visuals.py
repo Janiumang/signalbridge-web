@@ -203,7 +203,7 @@ PULSE_SVG = (
 def brand_bar() -> str:
     return (
         '<div class="sb-bar"><div class="sb-brand"><span class="sb-dot"></span>'
-        'SignalBridge openFDA</div><div class="sb-src">openFDA · FAERS</div></div>'
+        'SignalBridge</div><div class="sb-src">FDA · FAERS</div></div>'
     )
 
 
@@ -357,6 +357,31 @@ def frame_chips(tool_calls: list[dict[str, Any]]) -> str:
     return f'<div class="sb-chips" style="margin:.1rem 0 1rem">{html}</div>'
 
 
+_QUERY_LABELS = {
+    "calculate_reporting_odds_ratio": "Reporting odds ratio",
+    "count_adverse_events": "Count reports",
+    "count_reactions": "Top reactions",
+    "search_drug_adverse_events": "Search reports",
+    "get_drug_label": "FDA label",
+    "search_drug_recalls": "Recalls",
+    "ping": "Connection check",
+}
+
+_PIVOT_LABELS = {
+    "reaction": "by reaction",
+    "country": "by country",
+    "year": "by year",
+    "reporter_qualification": "by reporter",
+    "concomitant_drug": "by co-reported drug",
+    "seriousness_subtype": "by seriousness",
+    "sex": "by patient sex",
+}
+
+
+def _query_label(name: str) -> str:
+    return _QUERY_LABELS.get(name, name.replace("_", " "))
+
+
 def plan_rows(tool_calls: list[dict[str, Any]]) -> str:
     if not tool_calls:
         return ""
@@ -374,9 +399,12 @@ def plan_rows(tool_calls: list[dict[str, Any]]) -> str:
         summary = _result_summary(call["name"], data)
         err = " err" if summary == "error" else ""
         own = {k: v for k, v in (call.get("input") or {}).items() if k not in shared}
-        own_txt = _args_summary(own).replace("pivot = ", "pivot = ")
+        pivot = own.pop("pivot", None)
+        own_txt = _args_summary(own)
+        if pivot:
+            own_txt = (_PIVOT_LABELS.get(str(pivot), f"by {pivot}") + "  " + own_txt).strip()
         rows.append(
-            f'<div class="sb-row{err}"><span><span class="t">{escape(call["name"])}</span> '
+            f'<div class="sb-row{err}"><span><span class="t">{escape(_query_label(call["name"]))}</span> '
             f'<span class="a">{escape(own_txt)}</span></span>'
             f'<span class="r">{escape(summary)}</span></div>'
         )
@@ -384,13 +412,13 @@ def plan_rows(tool_calls: list[dict[str, Any]]) -> str:
     if n == 1:
         title = "One live query."
     elif consistent:
-        title = f"{n} tool calls, one consistent frame."
+        title = f"{n} queries, one consistent frame."
     else:
         title = f"{n} live queries."
     footer = ""
     if consistent and chips:
         footer = (
-            '<div class="sb-note">Same filters on every call · '
+            '<div class="sb-note">Same filters on every query · '
             + escape(" · ".join(c for c in chips if not c.startswith("drug ")))
             + "</div>"
         )

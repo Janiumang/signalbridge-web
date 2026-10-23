@@ -60,6 +60,8 @@ EXAMPLE_PROMPTS: tuple[str, ...] = (
 AVATARS = {"user": ":material/person:", "assistant": ":material/monitor_heart:"}
 
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -244,28 +246,30 @@ def _friendly_error(e: BaseException) -> str:
     msg = str(e).lower()
     if isinstance(e, anthropic.AuthenticationError):
         if _using_own_key():
-            return "Your Anthropic API key was rejected. Check it in the sidebar."
-        return "SignalBridge's AI service isn't available right now (key problem). Please try again later."
+            return "Your API key was rejected."
+        return "SignalBridge's assistant isn't available right now. Please try again later."
     if isinstance(e, anthropic.PermissionDeniedError) or "credit balance" in msg:
-        return "SignalBridge's AI service is paused (usage limit reached). Please try again later."
+        return "SignalBridge has reached its usage limit for now. Please try again later."
     if isinstance(e, anthropic.NotFoundError):
-        return "The configured AI model isn't available. The site owner needs to update SIGNALBRIDGE_MODEL."
+        return "SignalBridge's assistant is being updated. Please try again later."
     if isinstance(e, anthropic.BadRequestError):
         detail = ""
         try:
             detail = e.body.get("error", {}).get("message", "")  # type: ignore[union-attr]
         except Exception:
             detail = ""
-        return "The AI service rejected the request" + (f": {detail[:200]}" if detail else ".") + " Please try again."
+        logger.warning("Bad request: %s", detail[:300])
+        return "That question couldn't be processed. Please rephrase it and try again."
     if isinstance(e, anthropic.RateLimitError):
         return "Lots of questions right now - please wait a minute and try again."
     if isinstance(e, anthropic.APIStatusError) and getattr(e, "status_code", 0) >= 500:
-        return "The AI service had a temporary problem. Please try again in a minute."
+        return "SignalBridge had a temporary problem. Please try again in a minute."
     if isinstance(e, anthropic.APIConnectionError):
-        return "Couldn't reach the AI service. Please try again in a minute."
+        return "SignalBridge couldn't complete the search. Please try again in a minute."
     if "mcp-server-openfda" in msg or "connection closed" in msg:
-        return "The FDA search engine failed to start. Please try again; if it keeps happening the site owner will fix it."
-    return f"Something went wrong ({type(e).__name__}). Please try again."
+        return "The FDA search didn't start. Please try again in a moment."
+    logger.warning("Unhandled error: %s: %s", type(e).__name__, e)
+    return "Something went wrong. Please try again."
 
 
 # ---------------------------------------------------------------------------
@@ -298,21 +302,19 @@ def _limit_message() -> str | None:
         return None
     if not OWNER_API_KEY:
         return (
-            "The free tier isn't configured on this server. Add your own "
-            "Anthropic API key in the sidebar to chat."
+            "SignalBridge isn't available right now. Please try again later."
         )
     key = visitor_key()
     if visitor_used(key) >= VISITOR_QUESTION_LIMIT:
         return (
             f"You've used all {VISITOR_QUESTION_LIMIT} free questions for the last 24 hours. "
-            f"Your next free question opens {_resets_in_words(key)}, or add your own "
-            "Anthropic API key in the sidebar to keep going."
+            f"Your next free question opens {_resets_in_words(key)}. "
+            "Sign up in the sidebar to hear about higher limits."
         )
     if _daily_used() >= DAILY_QUESTION_LIMIT:
         return (
             "SignalBridge has reached its free question limit for today. "
-            "Please come back tomorrow, or add your own Anthropic API key in "
-            "the sidebar."
+            "Please come back tomorrow."
         )
     return None
 
@@ -324,7 +326,7 @@ def _limit_message() -> str | None:
 def render_status(slot: Any) -> None:
     """Free-tier / own-key status line in the sidebar."""
     if _using_own_key():
-        slot.success("Using your own API key - no question limit.")
+        slot.success("No question limit on this session.")
     elif OWNER_API_KEY:
         remaining = max(0, VISITOR_QUESTION_LIMIT - visitor_used(visitor_key()))
         slot.info(f"Free tier: {remaining} of {VISITOR_QUESTION_LIMIT} questions left in the last 24 hours.")
@@ -338,23 +340,6 @@ def render_sidebar() -> Any:
         # Filled at the end of the run so the count reflects this turn.
         status_slot = st.empty()
 
-        with st.expander("Use your own Anthropic API key (optional)"):
-            key = st.text_input(
-                "Anthropic API key",
-                type="password",
-                value=st.session_state.visitor_api_key,
-                label_visibility="collapsed",
-                placeholder="sk-ant-...",
-                help=(
-                    "Removes the free-tier limit. The key is kept only in "
-                    "this browser session - never logged, never sent anywhere "
-                    "except Anthropic's API."
-                ),
-            )
-            if key != st.session_state.visitor_api_key:
-                st.session_state.visitor_api_key = key.strip()
-                st.rerun()
-
         with st.expander("Get updates · request a feature"):
             feedback.render_form("sidebar", st.session_state.questions_asked)
 
@@ -367,10 +352,10 @@ def render_sidebar() -> Any:
         st.markdown("---")
         st.markdown(
             "**About**\n\n"
-            "Browser chat interface for "
-            "[mcp-server-openfda](https://github.com/Janiumang/mcp-server-openfda), "
-            "part of the SignalBridge AI family of regulatory-data MCP "
-            "connectors. Uses only public openFDA data. MIT licensed."
+            "SignalBridge searches the FDA's public adverse event database "
+            "(FAERS), drug labels and recalls, and runs standard "
+            "disproportionality statistics on what it finds. Every answer is "
+            "built from a live search - nothing is answered from memory."
         )
         st.caption(
             "Free-tier limits use an anonymised hash of your IP address, kept "
@@ -443,7 +428,7 @@ def handle_user_input(text: str) -> None:
         st.markdown(text)
 
     with st.chat_message("assistant", avatar=AVATARS["assistant"]):
-        with st.spinner("Querying openFDA via the MCP server..."):
+        with st.spinner("Searching FDA adverse event data..."):
             try:
                 response_text, tool_calls, _usage = asyncio.run(
                     run_chat_turn(
@@ -510,7 +495,7 @@ def render_signup() -> None:
 
 def main() -> None:
     st.set_page_config(
-        page_title="SignalBridge openFDA",
+        page_title="SignalBridge",
         layout="centered",
     )
 

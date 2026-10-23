@@ -70,11 +70,28 @@ def test_no_owner_key_blocks_free_tier(monkeypatch):
     at, seen = _app(monkeypatch, ANTHROPIC_API_KEY="")
     at.chat_input(key="home_ask").set_value("q").run()
     assert not seen
-    assert any("isn't configured" in w.value for w in at.warning)
+    assert any("isn't available" in w.value for w in at.warning)
 
 
 def test_auth_error_is_unwrapped_and_friendly(monkeypatch):
     at, _ = _app(monkeypatch)
     at.chat_input(key="home_ask").set_value("boom-auth").run()
     msgs = [e.value for e in at.error]
-    assert msgs and "key problem" in msgs[0] and "ExceptionGroup" not in msgs[0]
+    assert msgs and "isn't available" in msgs[0] and "ExceptionGroup" not in msgs[0]
+
+
+def test_ui_text_hides_internals():
+    """Visitors must not see the AI vendor, model, MCP or tool names."""
+    import re, pathlib
+    src = pathlib.Path(__file__).resolve().parent.parent
+    banned = re.compile(r"Anthropic|Claude|MCP|openFDA|mcp-server|sk-ant", re.IGNORECASE)
+    for name in ("app.py", "visuals.py"):
+        text = (src / name).read_text()
+        # Only user-facing string literals matter; strip comments/docstrings crudely.
+        code = "\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))
+        code = re.sub(r'"""[\s\S]*?"""', "", code)
+        strings = re.findall(r'"([^"\n]*)"|\'([^\'\n]*)\'', code)
+        hits = [a or b for a, b in strings if banned.search(a or b)]
+        hits = [h for h in hits if not h.startswith(("OPENFDA_API_KEY", "SIGNALBRIDGE_", "ANTHROPIC_API_KEY"))
+                and "import" not in h and ".py" not in h and h != "mcp-server-openfda"]
+        assert not hits, (name, hits)

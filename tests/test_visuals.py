@@ -76,7 +76,7 @@ def test_frame_chips_and_consistent_title():
              {"name": "calculate_reporting_odds_ratio", "input": {**f, "min_age": 18, "max_age": 64}, "data": _ror()},
              {"name": "count_adverse_events", "input": {**f, "pivot": "year", "min_age": 65}, "data": {}}]
     html = visuals.plan_rows(calls)
-    assert "3 tool calls, one consistent frame." in html
+    assert "3 queries, one consistent frame." in html
     assert "compare" in html and "country US" in html
 
 

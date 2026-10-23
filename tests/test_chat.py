@@ -100,7 +100,7 @@ def test_tool_failure_is_reported_to_model_not_raised(fake_llm):
     llm.session.call_tool = boom
     answer, log, _ = run()
     assert answer == "explained"
-    assert "tool call failed" in log[0]["result_preview"]
+    assert "search failed" in log[0]["result_preview"]
 
 
 def test_large_tool_result_is_truncated_before_model(fake_llm):
