@@ -137,6 +137,9 @@ code, pre, .stCode {{ font-family: var(--sb-mono) !important; }}
 .sb-pulse {{ display:block; margin: -.4rem 0 1.4rem auto; }}
 .sb-chips {{ display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; margin:.2rem 0 1.4rem; }}
 .sb-chip {{ font-family: var(--sb-mono); font-size: .74rem; background: var(--sb-card); border:1px solid var(--sb-rule); border-radius: 6px; padding: .3rem .6rem; color: var(--sb-ink); }}
+.sb-chip-cmp {{ background: {GREEN_SOFT}; border-color: #cfe3dc; color: {GREEN_DARK}; }}
+.sb-more {{ margin: .4rem 0 .9rem; }}
+.sb-more summary {{ font-family: var(--sb-mono); font-size: .76rem; color: var(--sb-muted); cursor: pointer; padding: .5rem 0; letter-spacing: .04em; }}
 .sb-arrow {{ font-family: var(--sb-mono); color: var(--sb-faint); font-size:.8rem; }}
 
 /* Cards */
@@ -281,24 +284,115 @@ def _result_summary(name: str, data: Any) -> str:
     return ""
 
 
+_FILTER_KEYS = ("drug_name", "reaction", "min_age", "max_age", "country", "start_date", "end_date")
+
+
+def _age_label(lo: Any, hi: Any) -> str | None:
+    if lo is None and hi is None:
+        return None
+    if lo is not None and hi is not None:
+        return f"age {lo}–{hi}"
+    if lo is not None:
+        return f"age ≥ {lo}"
+    return f"age ≤ {hi}"
+
+
+def _frame(tool_calls: list[dict[str, Any]]) -> tuple[list[str], list[str], bool]:
+    """Shared filter chips, subgroup 'compare' chips, and whether every
+    call used the same frame."""
+    inputs = [c.get("input") or {} for c in tool_calls]
+    values: dict[str, set] = {k: set() for k in _FILTER_KEYS}
+    for inp in inputs:
+        for k in _FILTER_KEYS:
+            if inp.get(k) not in (None, ""):
+                values[k].add(str(inp[k]))
+
+    chips: list[str] = []
+    if len(values["drug_name"]) == 1:
+        chips.append(f"drug {next(iter(values['drug_name']))}")
+    if len(values["reaction"]) == 1:
+        chips.append(f"PT {next(iter(values['reaction']))}")
+    if len(values["min_age"]) <= 1 and len(values["max_age"]) <= 1:
+        lo = next(iter(values["min_age"]), None)
+        hi = next(iter(values["max_age"]), None)
+        age = _age_label(lo, hi)
+        if age:
+            chips.append(age.replace("age", "age", 1))
+    if len(values["country"]) == 1:
+        chips.append(f"country {next(iter(values['country']))}")
+    if len(values["start_date"]) == 1:
+        chips.append(f"received ≥ {next(iter(values['start_date']))}")
+    if len(values["end_date"]) == 1:
+        chips.append(f"received ≤ {next(iter(values['end_date']))}")
+
+    compare: list[str] = []
+    if len(values["drug_name"]) > 1:
+        compare.append("compare " + " vs ".join(sorted(values["drug_name"])))
+    if len(values["min_age"]) > 1 or len(values["max_age"]) > 1:
+        groups = sorted(
+            {(_age_label(i.get("min_age"), i.get("max_age")) or "all ages") for i in inputs
+             if i.get("min_age") is not None or i.get("max_age") is not None}
+        )
+        compare.append("compare " + " vs ".join(groups))
+    if len(values["country"]) > 1:
+        compare.append("compare " + " vs ".join(sorted(values["country"])))
+
+    def sig(i: dict[str, Any]) -> tuple:
+        return tuple(i.get(k) for k in ("drug_name", "country", "start_date", "end_date"))
+
+    consistent = len(tool_calls) > 1 and len({sig(i) for i in inputs}) == 1
+    return chips, compare, consistent
+
+
+def frame_chips(tool_calls: list[dict[str, Any]]) -> str:
+    chips, compare, _ = _frame(tool_calls)
+    if not chips and not compare:
+        return ""
+    html = "".join(f'<span class="sb-chip">{escape(c)}</span>' for c in chips)
+    html += "".join(f'<span class="sb-chip sb-chip-cmp">{escape(c)}</span>' for c in compare)
+    return f'<div class="sb-chips" style="margin:.1rem 0 1rem">{html}</div>'
+
+
 def plan_rows(tool_calls: list[dict[str, Any]]) -> str:
     if not tool_calls:
         return ""
     n = len(tool_calls)
+    # Filters shared by every call are shown once as chips; rows show only
+    # what distinguishes each call (pivot, subgroup).
+    inputs = [c.get("input") or {} for c in tool_calls]
+    shared = {
+        k for k in _FILTER_KEYS
+        if n > 1 and all(k in i for i in inputs) and len({str(i.get(k)) for i in inputs}) == 1
+    }
     rows = []
     for call in tool_calls:
         data = call.get("data")
         summary = _result_summary(call["name"], data)
         err = " err" if summary == "error" else ""
+        own = {k: v for k, v in (call.get("input") or {}).items() if k not in shared}
+        own_txt = _args_summary(own).replace("pivot = ", "pivot = ")
         rows.append(
             f'<div class="sb-row{err}"><span><span class="t">{escape(call["name"])}</span> '
-            f'<span class="a">{escape(_args_summary(call.get("input") or {}))}</span></span>'
+            f'<span class="a">{escape(own_txt)}</span></span>'
             f'<span class="r">{escape(summary)}</span></div>'
         )
-    title = "One live query." if n == 1 else f"{n} live queries."
+    chips, _, consistent = _frame(tool_calls)
+    if n == 1:
+        title = "One live query."
+    elif consistent:
+        title = f"{n} tool calls, one consistent frame."
+    else:
+        title = f"{n} live queries."
+    footer = ""
+    if consistent and chips:
+        footer = (
+            '<div class="sb-note">Same filters on every call · '
+            + escape(" · ".join(c for c in chips if not c.startswith("drug ")))
+            + "</div>"
+        )
     return (
         '<div class="sb-card"><div class="sb-eyebrow">The plan it ran</div>'
-        f'<div class="sb-h">{title}</div>{"".join(rows)}</div>'
+        f'<div class="sb-h">{title}</div>{frame_chips(tool_calls)}{"".join(rows)}{footer}</div>'
     )
 
 
@@ -537,17 +631,129 @@ def parse_json(text: str) -> Any:
         return None
 
 
+def _group_label(data: dict[str, Any], vary: set[str]) -> str:
+    f = data.get("filters_applied") or {}
+    parts = []
+    if "drug" in vary:
+        parts.append(str(data.get("drug_name", "")))
+    if "reaction" in vary:
+        parts.append(str(data.get("reaction", "")))
+    if "age" in vary:
+        lo, hi = f.get("min_age"), f.get("max_age")
+        if lo is not None and hi is None:
+            parts.append(f"Adults {lo}+")
+        elif lo is not None and hi is not None:
+            parts.append(f"Adults {lo}–{hi}")
+        elif hi is not None:
+            parts.append(f"Age ≤ {hi}")
+        else:
+            parts.append("All ages")
+    if "country" in vary:
+        parts.append(str(f.get("country") or "All countries"))
+    if "dates" in vary:
+        parts.append(f"{f.get('start_date') or '…'} to {f.get('end_date') or 'now'}")
+    return " · ".join(p for p in parts if p) or "Group"
+
+
+def ror_compare_card(datas: list[dict[str, Any]]) -> str:
+    """Several RORs on one log axis - e.g. 'The signal holds in both groups.'"""
+    datas = [d for d in datas if isinstance(d, dict) and "contingency_table" in d]
+    if len(datas) < 2:
+        return ""
+
+    def fa(d: dict[str, Any], k: str) -> Any:
+        return (d.get("filters_applied") or {}).get(k)
+
+    vary: set[str] = set()
+    if len({str(d.get("drug_name", "")).lower() for d in datas}) > 1:
+        vary.add("drug")
+    if len({str(d.get("reaction", "")).lower() for d in datas}) > 1:
+        vary.add("reaction")
+    if len({(fa(d, "min_age"), fa(d, "max_age")) for d in datas}) > 1:
+        vary.add("age")
+    if len({fa(d, "country") for d in datas}) > 1:
+        vary.add("country")
+    if len({(fa(d, "start_date"), fa(d, "end_date")) for d in datas}) > 1:
+        vary.add("dates")
+
+    signals = [d.get("signal") for d in datas]
+    if all(s is True for s in signals):
+        title = "The signal holds in both groups." if len(datas) == 2 else "The signal holds in every group."
+    elif any(s is True for s in signals):
+        title = "The signal differs between groups."
+    else:
+        title = "No signal in any group."
+
+    w, label_w, x0, x1 = 640, 0, 190, 600
+    row_h, top = 58, 34
+    h = top + row_h * len(datas) + 46
+    mono = "JetBrains Mono, monospace"
+    sans = "Plus Jakarta Sans, sans-serif"
+    one = _x(1, x0, x1)
+    parts = [
+        f'<line x1="{one:.1f}" y1="10" x2="{one:.1f}" y2="{h - 40}" stroke="{MUTED}" stroke-width="1.5" stroke-dasharray="5 5"/>',
+        f'<text x="{one + 6:.1f}" y="20" font-family="{mono}" font-size="11" fill="{MUTED}">no association</text>',
+    ]
+    for i, d in enumerate(datas):
+        y = top + i * row_h + 22
+        label = _group_label(d, vary)
+        a = (d.get("contingency_table") or {}).get("a_drug_and_reaction")
+        parts.append(f'<text x="0" y="{y - 2}" font-family="{mono}" font-size="14" fill="{INK}">{escape(label[:24])}</text>')
+        parts.append(f'<text x="0" y="{y + 16}" font-family="{mono}" font-size="11" fill="{FAINT}">n = {_fmt_int(a)}</text>')
+        ror, lo, hi = d.get("ror"), d.get("ci_95_lower"), d.get("ci_95_upper")
+        if ror and ror > 0:
+            xl, xh, xp = _x(lo or ror, x0, x1), _x(hi or ror, x0, x1), _x(ror, x0, x1)
+            col = GREEN if d.get("signal") else FAINT
+            parts.append(f'<line x1="{xl:.1f}" y1="{y}" x2="{max(xh, xl + 4):.1f}" y2="{y}" stroke="{col}" stroke-width="7" stroke-linecap="round"/>')
+            parts.append(f'<rect x="{xp - 6:.1f}" y="{y - 11}" width="12" height="22" rx="2" fill="{col}"/>')
+            txt = f"{_fmt_ratio(ror)} ({_fmt_ratio(lo)}–{_fmt_ratio(hi)})"
+            tx = min(xp + 14, x1 - 4)
+            anchor = "start" if xp + 14 < x1 - 120 else "end"
+            if anchor == "end":
+                tx = xl - 10
+            parts.append(f'<text x="{tx:.1f}" y="{y + 5}" text-anchor="{anchor}" font-family="{mono}" font-size="13" fill="{INK}">{escape(txt)}</text>')
+        else:
+            parts.append(f'<text x="{x0}" y="{y + 5}" font-family="{mono}" font-size="12" fill="{MUTED}">ROR undefined</text>')
+    ay = h - 34
+    parts.append(f'<line x1="{x0}" y1="{ay}" x2="{x1}" y2="{ay}" stroke="{AXIS}" stroke-width="2"/>')
+    for t in (0.5, 1, 2, 5, 10):
+        tx = _x(t, x0, x1)
+        parts.append(f'<line x1="{tx:.1f}" y1="{ay - 6}" x2="{tx:.1f}" y2="{ay + 6}" stroke="{FAINT}" stroke-width="1.5"/>')
+        parts.append(f'<text x="{tx:.1f}" y="{ay + 24}" text-anchor="middle" font-family="{mono}" font-size="11" fill="{MUTED}">{t:g}</text>')
+    svg = f'<svg viewBox="0 0 {w} {h}" width="{w}" height="{h}">{"".join(parts)}</svg>'
+
+    eyebrow = "Stratified ROR" if "age" in vary else "ROR comparison"
+    return (
+        f'<div class="sb-card"><div class="sb-eyebrow">{eyebrow}</div><div class="sb-h">{escape(title)}</div>'
+        + _img(svg, "Reporting odds ratios by group on a log scale", style="width:100%;height:auto;display:block")
+        + '<div class="sb-note">Compare groups only within the same frame: background reporting rates differ by '
+        "subgroup, so a smaller ROR can mean the reaction is common across all drugs in that group, not that the "
+        "drug is safer there.</div></div>"
+    )
+
+
 def result_cards(tool_calls: list[dict[str, Any]]) -> list[str]:
     """Visual cards for the tool results worth drawing (ROR + counts)."""
-    cards = []
-    for call in tool_calls:
-        data = call.get("data")
-        if call["name"] == "calculate_reporting_odds_ratio":
-            html = ror_card(data)
-        elif call["name"] in ("count_adverse_events", "count_reactions"):
-            html = count_card(data)
-        else:
-            html = ""
+    cards: list[str] = []
+    rors = [c.get("data") for c in tool_calls if c["name"] == "calculate_reporting_odds_ratio"]
+    rors = [d for d in rors if isinstance(d, dict) and "contingency_table" in d]
+    if len(rors) >= 2:
+        cards.append(ror_compare_card(rors))
+        # Detail (2x2 + criteria) for the first group; the rest stay folded.
+        cards.append(ror_card(rors[0]))
+        more = "".join(ror_card(d) for d in rors[1:])
+        cards.append(
+            f'<details class="sb-more"><summary>Full 2×2 and criteria for the other '
+            f'{len(rors) - 1} group{"s" if len(rors) > 2 else ""}</summary>{more}</details>'
+        )
+    elif rors:
+        cards.append(ror_card(rors[0]))
+
+    order = {"seriousness_subtype": 0, "reporter_qualification": 1, "year": 2}
+    counts = [c for c in tool_calls if c["name"] in ("count_adverse_events", "count_reactions")]
+    counts.sort(key=lambda c: order.get((c.get("data") or {}).get("pivot", ""), 9))
+    for call in counts:
+        html = count_card(call.get("data"))
         if html:
             cards.append(html)
-    return cards
+    return [c for c in cards if c]

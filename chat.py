@@ -18,6 +18,7 @@ Cost controls (the app runs on the owner's API key by default):
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -33,7 +34,7 @@ DEFAULT_MODEL = "claude-haiku-5-5"
 DEFAULT_MAX_TOKENS = 2048
 
 # Cost guards.
-MAX_TOOL_ROUNDS = 6  # model <-> tools round-trips per user question
+MAX_TOOL_ROUNDS = 4  # model <-> tools round-trips per user question (a workup needs 1-2)
 MAX_TOOL_RESULT_CHARS = 15_000  # ~4K tokens per tool result sent to the model
 MAX_HISTORY_MESSAGES = 8  # prior user/assistant messages resent each turn
 
@@ -51,6 +52,15 @@ You have these tools available:
 When the user asks about a specific drug, reaction, recall, or label content, use these tools. Synthesize the tool results into a clear, well-sourced answer. Cite specific numbers, dates, and percentages from the tool output. Do not invent data.
 
 Prefer aggregate tools (count_reactions, count_adverse_events, calculate_reporting_odds_ratio) over pulling individual reports, and keep search_drug_adverse_events limits small (10-20) unless the user needs case-level detail.
+
+SIGNAL WORKUP (deep search). When the user asks whether a reaction is reported (disproportionately) with a drug, asks for a signal assessment, or asks a multi-part safety question, run this plan in ONE turn - issue all tool calls together in a single response so they run in parallel - using IDENTICAL filters (drug_name, reaction, min_age, max_age, country, start_date, end_date) on every call:
+  1. calculate_reporting_odds_ratio
+  2. count_adverse_events with pivot="seriousness_subtype" and the reaction filter
+  3. count_adverse_events with pivot="reporter_qualification" and the reaction filter
+  4. count_adverse_events with pivot="year" and the reaction filter. If the user gave no date range, set start_date to January 1 ten years ago.
+  If the user asks to compare subgroups (e.g. adults 65+ vs 18-64, US vs non-US, two drugs, two time windows), call calculate_reporting_odds_ratio once per subgroup with every other filter identical, and run steps 2-4 for the primary subgroup.
+Convert the reaction to a MedDRA Preferred Term yourself before calling (e.g. "kidney injury" -> "Acute kidney injury", "GI bleed" -> "Gastrointestinal haemorrhage", "liver injury" -> "Drug-induced liver injury") and state which PT you used.
+Structure the answer as: one-line verdict; ROR with 95% CI and co-report count per group (and what a difference between groups may reflect - background rates differ by subgroup); seriousness (call out deaths, noting a death flag records the outcome, not causality); who reports (flag lawyers at 5% or more of reports as possible stimulated reporting, and note consumer-heavy reporting); trend (the current year is partial); caveats. The app draws charts from the tool results, so do not repeat every number - interpret them.
 
 Reaction filters work best with MedDRA Preferred Terms (e.g., "Pneumonitis"); common lay terms are expanded automatically and the tool output says when that happened.
 
@@ -141,19 +151,21 @@ async def run_chat_turn(
             if response.stop_reason != "tool_use":
                 return _extract_text(response.content), tool_calls_log, usage
 
-            tool_results: list[dict[str, Any]] = []
-            for block in response.content:
-                if block.type != "tool_use":
-                    continue
+            tool_blocks = [b for b in response.content if b.type == "tool_use"]
 
+            async def _run(block: Any) -> str:
                 try:
-                    call_result = await session.call_tool(
-                        block.name, arguments=block.input
-                    )
-                    result_text = _extract_tool_result_text(call_result)
-                except Exception as e:
-                    result_text = f"[tool call failed: {type(e).__name__}: {e}]"
+                    call_result = await session.call_tool(block.name, arguments=block.input)
+                    return _extract_tool_result_text(call_result)
+                except Exception as e:  # surfaced to the model, not raised
+                    return f"[tool call failed: {type(e).__name__}: {e}]"
 
+            # Run every tool call from this response concurrently - a deep
+            # search issues 4-6 calls at once.
+            results = await asyncio.gather(*(_run(b) for b in tool_blocks))
+
+            tool_results: list[dict[str, Any]] = []
+            for block, result_text in zip(tool_blocks, results):
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -166,8 +178,6 @@ async def run_chat_turn(
                         "name": block.name,
                         "input": dict(block.input) if block.input else {},
                         "result_preview": _truncate(result_text, 800),
-                        # Parsed result for the UI's visual cards. Kept only
-                        # for small aggregate tools so session state stays light.
                         "data": _parse_small_json(block.name, result_text),
                     }
                 )

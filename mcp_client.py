@@ -14,12 +14,13 @@ the lifecycle simple at the cost of a one-time startup per turn.
 
 from __future__ import annotations
 
+import os
 import shutil
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import get_default_environment, stdio_client
 
 
 def _resolve_server_command() -> str:
@@ -55,9 +56,16 @@ async def mcp_session() -> AsyncIterator[ClientSession]:
     the outer task is cancelled). Each invocation creates a fresh process,
     so this is suitable for per-turn use, not for hot paths.
     """
+    # The MCP SDK passes only a minimal safe environment to the subprocess,
+    # so forward the openFDA key explicitly. Without it openFDA allows
+    # ~1,000 requests/day per IP - a deep search uses ~25.
+    env = get_default_environment()
+    if os.environ.get("OPENFDA_API_KEY"):
+        env["OPENFDA_API_KEY"] = os.environ["OPENFDA_API_KEY"]
     server_params = StdioServerParameters(
         command=_resolve_server_command(),
         args=[],
+        env=env,
     )
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:

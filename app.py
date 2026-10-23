@@ -73,6 +73,11 @@ MODEL: str = _config("SIGNALBRIDGE_MODEL", DEFAULT_MODEL) or DEFAULT_MODEL
 SESSION_QUESTION_LIMIT: int = int(_config("SESSION_QUESTION_LIMIT", 10))
 DAILY_QUESTION_LIMIT: int = int(_config("DAILY_QUESTION_LIMIT", 200))
 
+# Forwarded to the MCP server subprocess (see mcp_client.py).
+_openfda_key = _config("OPENFDA_API_KEY", "")
+if _openfda_key:
+    os.environ["OPENFDA_API_KEY"] = str(_openfda_key)
+
 
 # ---------------------------------------------------------------------------
 # App-wide daily counter (shared across all visitors on this server)
