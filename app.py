@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import json
+import logging
 import os
 import threading
 from typing import Any
@@ -106,6 +106,46 @@ def _increment_daily() -> None:
         if c["date"] != _today():
             c["date"], c["count"] = _today(), 0
         c["count"] += 1
+
+
+# ---------------------------------------------------------------------------
+# Error reporting
+# ---------------------------------------------------------------------------
+
+def _root_error(e: BaseException) -> BaseException:
+    """Unwrap anyio/asyncio ExceptionGroups to the first real error.
+
+    Anything raised inside the MCP session (including Anthropic API errors)
+    surfaces as 'ExceptionGroup: unhandled errors in a TaskGroup', which
+    hides the cause.
+    """
+    while isinstance(e, BaseExceptionGroup) and e.exceptions:
+        e = e.exceptions[0]
+    return e
+
+
+def _friendly_error(e: BaseException) -> str:
+    """Visitor-facing message; never leaks keys or stack traces."""
+    import anthropic
+
+    msg = str(e).lower()
+    if isinstance(e, anthropic.AuthenticationError):
+        if _using_own_key():
+            return "Your Anthropic API key was rejected. Check it in the sidebar."
+        return "SignalBridge's AI service isn't available right now (key problem). Please try again later."
+    if isinstance(e, anthropic.PermissionDeniedError) or "credit balance" in msg:
+        return "SignalBridge's AI service is paused (usage limit reached). Please try again later."
+    if isinstance(e, anthropic.NotFoundError):
+        return "The configured AI model isn't available. The site owner needs to update SIGNALBRIDGE_MODEL."
+    if isinstance(e, anthropic.RateLimitError):
+        return "Lots of questions right now - please wait a minute and try again."
+    if isinstance(e, anthropic.APIStatusError) and getattr(e, "status_code", 0) >= 500:
+        return "The AI service had a temporary problem. Please try again in a minute."
+    if isinstance(e, anthropic.APIConnectionError):
+        return "Couldn't reach the AI service. Please try again in a minute."
+    if "mcp-server-openfda" in msg or "connection closed" in msg:
+        return "The FDA search engine failed to start. Please try again; if it keeps happening the site owner will fix it."
+    return f"Something went wrong ({type(e).__name__}). Please try again."
 
 
 # ---------------------------------------------------------------------------
@@ -222,27 +262,13 @@ def render_sidebar() -> Any:
 # Message + tool-call rendering
 # ---------------------------------------------------------------------------
 
-def render_tool_calls(tool_calls: list[dict]) -> None:
-    """Raw tool-call log (inputs + result previews) for reviewers who want it."""
-    if not tool_calls:
-        return
-    with st.expander(f"Raw query log ({len(tool_calls)})", expanded=False):
-        for i, call in enumerate(tool_calls, start=1):
-            st.markdown(f"**{i}. `{call['name']}`**")
-            st.caption("Input")
-            st.code(json.dumps(call["input"], indent=2), language="json")
-            st.caption("Result preview")
-            st.code(call["result_preview"], language="json")
-
-
 def render_assistant(content: str, tool_calls: list[dict]) -> None:
-    """Plan rows -> visual result cards -> written answer -> raw log."""
+    """Plan rows -> visual result cards -> written answer."""
     if tool_calls:
         st.html(visuals.plan_rows(tool_calls))
         for card in visuals.result_cards(tool_calls):
             st.html(card)
     st.markdown(content)
-    render_tool_calls(tool_calls)
 
 
 def render_message(msg: dict) -> None:
@@ -303,7 +329,10 @@ def handle_user_input(text: str) -> None:
                     )
                 )
             except Exception as e:
-                st.error(f"{type(e).__name__}: {e}")
+                root = _root_error(e)
+                # Full detail goes to the server log (Manage app -> logs).
+                logging.exception("Chat turn failed: %r", root)
+                st.error(_friendly_error(root))
                 st.session_state.messages.pop()
                 return
 
