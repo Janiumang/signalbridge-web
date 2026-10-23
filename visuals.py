@@ -676,6 +676,9 @@ def ror_compare_card(datas: list[dict[str, Any]]) -> str:
     if len({(fa(d, "start_date"), fa(d, "end_date")) for d in datas}) > 1:
         vary.add("dates")
 
+    if "age" in vary:
+        datas = sorted(datas, key=lambda d: (fa(d, "min_age") or 0, fa(d, "max_age") or 999))
+
     signals = [d.get("signal") for d in datas]
     if all(s is True for s in signals):
         title = "The signal holds in both groups." if len(datas) == 2 else "The signal holds in every group."
@@ -684,7 +687,7 @@ def ror_compare_card(datas: list[dict[str, Any]]) -> str:
     else:
         title = "No signal in any group."
 
-    w, label_w, x0, x1 = 640, 0, 190, 600
+    w, label_w, x0, x1 = 640, 0, 180, 470  # labels | log-scale plot | value column
     row_h, top = 58, 34
     h = top + row_h * len(datas) + 46
     mono = "JetBrains Mono, monospace"
@@ -693,6 +696,7 @@ def ror_compare_card(datas: list[dict[str, Any]]) -> str:
     parts = [
         f'<line x1="{one:.1f}" y1="10" x2="{one:.1f}" y2="{h - 40}" stroke="{MUTED}" stroke-width="1.5" stroke-dasharray="5 5"/>',
         f'<text x="{one + 6:.1f}" y="20" font-family="{mono}" font-size="11" fill="{MUTED}">no association</text>',
+        f'<text x="{w - 4}" y="20" text-anchor="end" font-family="{mono}" font-size="11" fill="{MUTED}">ROR (95% CI)</text>',
     ]
     for i, d in enumerate(datas):
         y = top + i * row_h + 22
@@ -707,10 +711,9 @@ def ror_compare_card(datas: list[dict[str, Any]]) -> str:
             parts.append(f'<line x1="{xl:.1f}" y1="{y}" x2="{max(xh, xl + 4):.1f}" y2="{y}" stroke="{col}" stroke-width="7" stroke-linecap="round"/>')
             parts.append(f'<rect x="{xp - 6:.1f}" y="{y - 11}" width="12" height="22" rx="2" fill="{col}"/>')
             txt = f"{_fmt_ratio(ror)} ({_fmt_ratio(lo)}–{_fmt_ratio(hi)})"
-            tx = min(xp + 14, x1 - 4)
-            anchor = "start" if xp + 14 < x1 - 120 else "end"
-            if anchor == "end":
-                tx = xl - 10
+            # Values live in their own right-hand column, forest-plot style,
+            # so they never overlap a CI bar or the reference line.
+            tx, anchor = w - 4, "end"
             parts.append(f'<text x="{tx:.1f}" y="{y + 5}" text-anchor="{anchor}" font-family="{mono}" font-size="13" fill="{INK}">{escape(txt)}</text>')
         else:
             parts.append(f'<text x="{x0}" y="{y + 5}" font-family="{mono}" font-size="12" fill="{MUTED}">ROR undefined</text>')
