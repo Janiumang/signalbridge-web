@@ -40,6 +40,9 @@ import builtins
 seen = builtins.__dict__.setdefault("_SB_LIMIT_SEEN", [])
 async def fake(user_message, history, api_key, model):
     seen.append(user_message)
+    if user_message.startswith("offtopic"):
+        import chat
+        return chat.OUT_OF_SCOPE_REPLY, [], {{}}
     return "answer", [], {{}}
 import app
 app.run_chat_turn = fake
@@ -58,6 +61,7 @@ def fresh_app(monkeypatch):
     import app
     importlib.reload(app)
     app._visitor_log.clear()
+    app._daily_counter.clear()
     yield builtins.__dict__["_SB_LIMIT_SEEN"]
     import chat
     importlib.reload(app)
@@ -77,3 +81,19 @@ def test_refresh_does_not_reset_the_limit(fresh_app):
     assert fresh_app == ["q1", "q2"]
     assert any("last 24 hours" in w.value for w in refreshed.warning)
     assert any("0 of 2" in i.value for i in refreshed.sidebar.info)
+
+
+def test_every_third_refusal_uses_one_free_question(fresh_app):
+    import app
+    at = AppTest.from_string(SCRIPT, default_timeout=30)
+    at.run()
+    at.chat_input(key="home_ask").set_value("offtopic 1").run()
+    at.chat_input(key="chat_ask").set_value("offtopic 2").run()
+    assert app.visitor_used("ip:same-visitor") == 0          # two refusals: free
+    at.chat_input(key="chat_ask").set_value("offtopic 3").run()
+    assert app.visitor_used("ip:same-visitor") == 1          # third refusal charges one
+    assert app._daily_used() == 0                            # refusals don't eat the app-wide cap
+    at.chat_input(key="chat_ask").set_value("real question").run()
+    assert app.visitor_used("ip:same-visitor") == 2 and app._daily_used() == 1
+    at.chat_input(key="chat_ask").set_value("blocked now").run()
+    assert "blocked now" not in fresh_app                   # limit of 2 reached

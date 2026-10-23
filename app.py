@@ -44,7 +44,7 @@ from typing import Any
 
 import streamlit as st
 
-from chat import DEFAULT_MODEL, run_chat_turn
+from chat import DEFAULT_MODEL, OUT_OF_SCOPE_REPLY, run_chat_turn
 import feedback
 import visuals
 
@@ -174,6 +174,8 @@ def _visitor_log() -> dict[str, Any]:
 
 
 _MAX_TRACKED_VISITORS = 50_000
+REFUSALS_PER_CHARGE = 3  # every 3rd off-topic (refused) question counts as 1
+REFUSED_PREFIX = "refused|"
 
 
 def _prune(hits: "collections.deque[float]", now: float) -> None:
@@ -462,9 +464,20 @@ def handle_user_input(text: str) -> None:
         render_assistant(response_text, tool_calls)
 
     if not _using_own_key():
-        st.session_state.questions_asked += 1
-        record_visitor(visitor_key())
-        _increment_daily()
+        key = visitor_key()
+        if response_text == OUT_OF_SCOPE_REPLY:
+            # Off-topic questions are cheap (refused by the topic gate), so
+            # only every REFUSALS_PER_CHARGE-th one uses a free question.
+            record_visitor(REFUSED_PREFIX + key)
+            if visitor_used(REFUSED_PREFIX + key) % REFUSALS_PER_CHARGE == 0:
+                record_visitor(key)
+            st.caption(
+                f"Off-topic questions: every {REFUSALS_PER_CHARGE}rd one uses a free question."
+            )
+        else:
+            st.session_state.questions_asked += 1
+            record_visitor(key)
+            _increment_daily()
 
     st.session_state.messages.append(
         {
