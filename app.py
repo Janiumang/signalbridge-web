@@ -253,7 +253,7 @@ def render_examples() -> None:
     """Show clickable example prompts when the conversation is empty."""
     if st.session_state.messages:
         return
-    st.html('<div class="sb-eyebrow">Try one of these</div>')
+    st.html('<div class="sb-eyebrow" style="margin-top:1.4rem">Or try one of these</div>')
     cols = st.columns(2)
     for i, prompt in enumerate(EXAMPLE_PROMPTS):
         if cols[i % 2].button(prompt, key=f"example_{i}", use_container_width=True):
@@ -348,23 +348,36 @@ def main() -> None:
 
     st.html(visuals.GLOBAL_CSS)
     st.html(visuals.brand_bar())
-    if not st.session_state.messages:
+
+    # Home screen = no conversation yet and nothing queued to answer.
+    is_home = not st.session_state.messages and "pending_input" not in st.session_state
+
+    if is_home:
         st.html(visuals.hero())
+        # Inline question box right under the headline (a chat_input inside a
+        # container renders in place instead of pinning to the bottom).
+        with st.container():
+            home_text = st.chat_input(
+                "Ask a pharmacovigilance question...", key="home_ask"
+            )
+        if home_text:
+            st.session_state.pending_input = home_text
+            st.rerun()
+        render_examples()
+        render_signup()
+    else:
+        for msg in st.session_state.messages:
+            render_message(msg)
 
-    for msg in st.session_state.messages:
-        render_message(msg)
+        if "pending_input" in st.session_state:
+            prompt = st.session_state.pending_input
+            del st.session_state.pending_input
+            handle_user_input(prompt)
 
-    render_examples()
+        render_signup()
 
-    if "pending_input" in st.session_state:
-        prompt = st.session_state.pending_input
-        del st.session_state.pending_input
-        handle_user_input(prompt)
-
-    if user_text := st.chat_input("Ask a pharmacovigilance question..."):
-        handle_user_input(user_text)
-
-    render_signup()
+        if user_text := st.chat_input("Ask a pharmacovigilance question...", key="chat_ask"):
+            handle_user_input(user_text)
 
     render_status(status_slot)
 
