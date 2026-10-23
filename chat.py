@@ -171,8 +171,9 @@ async def run_chat_turn(
                 )
                 continue
 
-            assistant_content = [_block_to_dict(b) for b in response.content]
-            messages.append({"role": "assistant", "content": assistant_content})
+            assistant_content = [d for d in (_block_to_dict(b) for b in response.content) if d]
+            if assistant_content:
+                messages.append({"role": "assistant", "content": assistant_content})
 
             if response.stop_reason != "tool_use":
                 text = _extract_text(response.content)
@@ -255,18 +256,24 @@ def _add_usage(total: dict[str, int], u: Any) -> None:
         total[key] += getattr(u, key, 0) or 0
 
 
-def _block_to_dict(block: Any) -> dict[str, Any]:
-    """Convert an Anthropic content block to a serializable dict."""
+def _block_to_dict(block: Any) -> dict[str, Any] | None:
+    """Convert an Anthropic content block back into request form.
+
+    Every block type is passed back unchanged (model_dump keeps e.g. a
+    thinking block's signature); a hand-built stub like {"type": "x"} would
+    be rejected with a 400. Empty/whitespace text blocks are dropped -
+    the API rejects those too.
+    """
+    if block.type == "text" and not (block.text or "").strip():
+        return None
+    if block.type == "tool_use":
+        return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
     if block.type == "text":
         return {"type": "text", "text": block.text}
-    if block.type == "tool_use":
-        return {
-            "type": "tool_use",
-            "id": block.id,
-            "name": block.name,
-            "input": block.input,
-        }
-    return {"type": block.type}
+    try:
+        return block.model_dump(exclude_none=True)
+    except Exception:
+        return None
 
 
 _NO_TEXT = "[Claude returned no text content]"

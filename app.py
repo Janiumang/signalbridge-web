@@ -137,6 +137,13 @@ def _friendly_error(e: BaseException) -> str:
         return "SignalBridge's AI service is paused (usage limit reached). Please try again later."
     if isinstance(e, anthropic.NotFoundError):
         return "The configured AI model isn't available. The site owner needs to update SIGNALBRIDGE_MODEL."
+    if isinstance(e, anthropic.BadRequestError):
+        detail = ""
+        try:
+            detail = e.body.get("error", {}).get("message", "")  # type: ignore[union-attr]
+        except Exception:
+            detail = ""
+        return "The AI service rejected the request" + (f": {detail[:200]}" if detail else ".") + " Please try again."
     if isinstance(e, anthropic.RateLimitError):
         return "Lots of questions right now - please wait a minute and try again."
     if isinstance(e, anthropic.APIStatusError) and getattr(e, "status_code", 0) >= 500:
