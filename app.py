@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import re
 import os
 import threading
 from typing import Any
@@ -275,7 +276,8 @@ def render_assistant(content: str, tool_calls: list[dict]) -> None:
         st.html(visuals.plan_rows(tool_calls))
         for card in visuals.result_cards(tool_calls):
             st.html(card)
-    st.markdown(content)
+    # Model output: drop markdown images so injected content can't load remote URLs.
+    st.markdown(re.sub(r"!\[[^\]]*\]\([^)]*\)", "", content))
 
 
 def render_message(msg: dict) -> None:
@@ -399,7 +401,7 @@ def main() -> None:
         # container renders in place instead of pinning to the bottom).
         with st.container():
             home_text = st.chat_input(
-                "Ask a pharmacovigilance question...", key="home_ask"
+                "Ask a pharmacovigilance question...", key="home_ask", max_chars=1000
             )
         if home_text:
             st.session_state.pending_input = home_text
@@ -417,7 +419,7 @@ def main() -> None:
 
         render_signup()
 
-        if user_text := st.chat_input("Ask a pharmacovigilance question...", key="chat_ask"):
+        if user_text := st.chat_input("Ask a pharmacovigilance question...", key="chat_ask", max_chars=1000):
             handle_user_input(user_text)
 
     render_status(status_slot)
