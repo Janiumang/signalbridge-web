@@ -25,6 +25,7 @@ import logging
 import re
 from typing import Any
 
+import anthropic
 from anthropic import AsyncAnthropic
 
 from mcp_client import mcp_session, mcp_tool_to_anthropic
@@ -141,6 +142,7 @@ async def run_chat_turn(
         ]
 
         extra_note = ""
+        query_retry_done = False
         for round_number in range(MAX_TOOL_ROUNDS + 1):
             # On the final allowed round, withhold tools so the model must
             # answer with what it already has instead of looping further.
@@ -165,16 +167,24 @@ async def run_chat_turn(
                 kwargs["tool_choice"] = {"type": "none"}
             else:
                 kwargs["tools"] = anthropic_tools
-                # Database first: until at least one tool has run this turn,
-                # the model must call a tool - it cannot answer from memory.
-                if not tool_calls_log:
-                    kwargs["tool_choice"] = {"type": "any"}
+                # Database first is enforced below (a reply with no tool call
+                # yet is discarded and retried). tool_choice "any"/"tool" is
+                # not supported by every model, so it is not used.
 
             if extra_note:
                 kwargs["system"] = kwargs["system"] + [{"type": "text", "text": extra_note}]
                 extra_note = ""
 
-            response = await client.messages.create(**kwargs)
+            try:
+                response = await client.messages.create(**kwargs)
+            except anthropic.BadRequestError as e:
+                # Some models reject certain tool_choice values; retry once without it.
+                if "tool_choice" in kwargs and "tool_choice" in str(e):
+                    logger.warning("Model rejected tool_choice=%s; retrying without it", kwargs["tool_choice"])
+                    kwargs.pop("tool_choice")
+                    response = await client.messages.create(**kwargs)
+                else:
+                    raise
             _add_usage(usage, response.usage)
 
             # Reply was cut off mid-plan: a truncated tool call can't be run.
@@ -188,6 +198,20 @@ async def run_chat_turn(
                     f"{MAX_CALLS_PER_RESPONSE} tool calls in this response and keep the plan focused."
                 )
                 continue
+
+            # Database first: a final answer before any tool has run is
+            # discarded; the model is asked again, told to query first.
+            if response.stop_reason != "tool_use" and not tool_calls_log and not last_round:
+                if not query_retry_done:
+                    query_retry_done = True
+                    logger.warning("Answer without a database query; discarding and retrying")
+                    extra_note = (
+                        "You answered without querying the database. That is not allowed. "
+                        "Call the relevant openFDA tool(s) now and answer only from their results."
+                    )
+                    continue
+                logger.warning("Model would not query the database; returning NO_QUERY_REPLY")
+                return NO_QUERY_REPLY, tool_calls_log, usage
 
             assistant_content = [d for d in (_block_to_dict(b) for b in response.content) if d]
             if assistant_content:
@@ -256,6 +280,11 @@ OUT_OF_SCOPE_REPLY = (
     "SignalBridge only answers drug-safety questions from FDA data - adverse "
     "events, drug labels, recalls and signal statistics. Try asking about a "
     "medicine, for example: *What are the most reported reactions for metformin?*"
+)
+NO_QUERY_REPLY = (
+    "I can only answer after searching the FDA database. Please name a specific "
+    "medicine (brand or generic) and what you want to know - for example its most "
+    "reported reactions, a specific side effect, or its label."
 )
 MEMORY_REPLY = (
     "SignalBridge only reports what the FDA database returns, so it can't answer "

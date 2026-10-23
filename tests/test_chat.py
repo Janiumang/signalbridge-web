@@ -20,12 +20,29 @@ def run(msg="q", history=None):
     return asyncio.run(chat.run_chat_turn(msg, history or [], "sk-test"))
 
 
-def test_first_round_forces_a_database_query(fake_llm):
+def test_never_uses_unsupported_tool_choice(fake_llm):
     llm = fake_llm([reply([tool_use("t1", "ping")], "tool_use"), reply([text("from data")], "end_turn")])
     answer, log, _ = run("what is povetacicept?")
-    assert llm.requests[0]["tool_choice"] == {"type": "any"}
-    assert "tool_choice" not in llm.requests[1]
+    assert all(r.get("tool_choice", {"type": "none"})["type"] in ("auto", "none") for r in llm.requests)
     assert answer == "from data" and [c["name"] for c in log] == ["ping"]
+
+
+def test_answer_without_query_is_discarded_and_retried(fake_llm):
+    llm = fake_llm([
+        reply([text("Povetacicept is a BAFF/APRIL inhibitor...")], "end_turn"),  # from memory
+        reply([tool_use("t1", "get_drug_label")], "tool_use"),
+        reply([text("No FDA label was found.")], "end_turn"),
+    ])
+    answer, log, _ = run("what is povetacicept?")
+    assert answer == "No FDA label was found." and len(log) == 1
+    assert "BAFF" not in str(llm.requests[1]["messages"])           # memory answer never kept
+    assert "without querying" in str(llm.requests[1]["system"])
+
+
+def test_model_that_never_queries_gets_safe_reply(fake_llm):
+    fake_llm([reply([text("memory 1")], "end_turn"), reply([text("memory 2")], "end_turn")])
+    answer, log, _ = run("q")
+    assert answer == chat.NO_QUERY_REPLY and log == []
 
 
 def test_grounding_and_coverage_rules_in_prompt():
@@ -166,3 +183,31 @@ def test_arg_checks():
     for bad in ({"drug_name": 'a"b'}, {"reaction": "x:y"}, {"firm": "pfizer*"}, {"country": "USA"},
                 {"start_date": "not-a-date"}, {"end_date": "2020-13-01"}, {"min_age": -1}, {"drug_name": "x" * 200}):
         assert chat._check_tool_args(bad)[1], bad
+
+
+def test_rejected_tool_choice_is_retried_without_it(fake_llm):
+    import anthropic, httpx
+    loop = [reply([tool_use(f"t{i}", "ping")], "tool_use") for i in range(chat.MAX_TOOL_ROUNDS)]
+    llm = fake_llm(loop + [reply([text("final")], "end_turn")])
+    real_create_calls = llm.requests
+    orig = chat.AsyncAnthropic
+
+    class Strict(orig):  # rejects any tool_choice, like some models do
+        def __init__(self, api_key):
+            super().__init__(api_key)
+            inner = self.messages.create
+
+            async def create(**kw):
+                if "tool_choice" in kw:
+                    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+                    raise anthropic.BadRequestError(
+                        'tool_choice: type "none" is not supported', response=httpx.Response(400, request=req), body=None)
+                return await inner(**kw)
+            self.messages.create = create
+
+    chat.AsyncAnthropic = Strict
+    try:
+        answer, _, _ = run()
+    finally:
+        chat.AsyncAnthropic = orig
+    assert answer == "final" and "tool_choice" not in real_create_calls[-1]
