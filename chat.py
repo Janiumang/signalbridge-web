@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -31,12 +32,15 @@ from mcp_client import mcp_session, mcp_tool_to_anthropic
 # Override with the SIGNALBRIDGE_MODEL secret (e.g. "claude-sonnet-5-5")
 # if answer quality needs a bump.
 DEFAULT_MODEL = "claude-haiku-5-5"
-DEFAULT_MAX_TOKENS = 2048
+DEFAULT_MAX_TOKENS = 8000  # room for a multi-call plan + a full answer
 
 # Cost guards.
 MAX_TOOL_ROUNDS = 4  # model <-> tools round-trips per user question (a workup needs 1-2)
 MAX_TOOL_RESULT_CHARS = 15_000  # ~4K tokens per tool result sent to the model
 MAX_HISTORY_MESSAGES = 8  # prior user/assistant messages resent each turn
+MAX_CALLS_PER_RESPONSE = 8  # tool calls Claude may issue in one reply
+
+logger = logging.getLogger("signalbridge.chat")
 
 
 SYSTEM_PROMPT = """You are SignalBridge, a pharmacovigilance assistant with direct access to FDA openFDA tools.
@@ -59,7 +63,9 @@ SIGNAL WORKUP (deep search). When the user asks whether a reaction is reported (
   3. count_adverse_events with pivot="reporter_qualification" and the reaction filter
   4. count_adverse_events with pivot="year" and the reaction filter. If the user gave no date range, set start_date to January 1 ten years ago.
   If the user asks to compare subgroups (e.g. adults 65+ vs 18-64, US vs non-US, two drugs, two time windows), call calculate_reporting_odds_ratio once per subgroup with every other filter identical, and run steps 2-4 for the primary subgroup.
-Convert the reaction to a MedDRA Preferred Term yourself before calling (e.g. "kidney injury" -> "Acute kidney injury", "GI bleed" -> "Gastrointestinal haemorrhage", "liver injury" -> "Drug-induced liver injury") and state which PT you used.
+DRUG CLASSES. If the user names a class (e.g. "GLP-1", "SGLT2 inhibitors", "statins", "PD-1 inhibitors"), expand it to its main marketed members yourself (e.g. GLP-1: semaglutide, tirzepatide, liraglutide, dulaglutide, exenatide) and say which you included. For a class question run only the pivots the user asked about, once per member - not the full workup per member. Never issue more than 8 tool calls in one response; if the question needs more, cover the most-used members first and say what was left out.
+
+Convert the reaction to a MedDRA Preferred Term yourself before calling (e.g. "kidney injury" -> "Acute kidney injury", "GI bleed" -> "Gastrointestinal haemorrhage", "liver injury" -> "Drug-induced liver injury", "got pregnant" -> "Pregnancy" and "Unintended pregnancy") and state which PT you used. When a lay idea maps to several PTs, query the main one and mention the others.
 Structure the answer as: one-line verdict; ROR with 95% CI and co-report count per group (and what a difference between groups may reflect - background rates differ by subgroup); seriousness (call out deaths, noting a death flag records the outcome, not causality); who reports (flag lawyers at 5% or more of reports as possible stimulated reporting, and note consumer-heavy reporting); trend (the current year is partial); caveats. The app draws charts from the tool results, so do not repeat every number - interpret them.
 
 Reaction filters work best with MedDRA Preferred Terms (e.g., "Pneumonitis"); common lay terms are expanded automatically and the tool output says when that happened.
@@ -120,6 +126,7 @@ async def run_chat_turn(
             {"role": "user", "content": user_message}
         ]
 
+        extra_note = ""
         for round_number in range(MAX_TOOL_ROUNDS + 1):
             # On the final allowed round, withhold tools so the model must
             # answer with what it already has instead of looping further.
@@ -145,14 +152,38 @@ async def run_chat_turn(
             else:
                 kwargs["tools"] = anthropic_tools
 
+            if extra_note:
+                kwargs["system"] = kwargs["system"] + [{"type": "text", "text": extra_note}]
+                extra_note = ""
+
             response = await client.messages.create(**kwargs)
             _add_usage(usage, response.usage)
+
+            # Reply was cut off mid-plan: a truncated tool call can't be run.
+            # Discard it and ask once more for a smaller plan.
+            if response.stop_reason == "max_tokens" and any(
+                b.type == "tool_use" for b in response.content
+            ):
+                logger.warning("Reply hit max_tokens during tool planning; retrying with a smaller plan")
+                extra_note = (
+                    "Your previous reply was too long and got cut off. Use at most "
+                    f"{MAX_CALLS_PER_RESPONSE} tool calls in this response and keep the plan focused."
+                )
+                continue
 
             assistant_content = [_block_to_dict(b) for b in response.content]
             messages.append({"role": "assistant", "content": assistant_content})
 
             if response.stop_reason != "tool_use":
-                return _extract_text(response.content), tool_calls_log, usage
+                text = _extract_text(response.content)
+                if text == _NO_TEXT:
+                    logger.warning("Empty final reply (stop_reason=%s)", response.stop_reason)
+                    text = (
+                        "I couldn't put an answer together for that one. Try naming a "
+                        "specific drug (e.g. semaglutide rather than \"GLP-1\") and one "
+                        "reaction, and I'll run the search again."
+                    )
+                return text, tool_calls_log, usage
 
             tool_blocks = [b for b in response.content if b.type == "tool_use"]
 
@@ -238,10 +269,13 @@ def _block_to_dict(block: Any) -> dict[str, Any]:
     return {"type": block.type}
 
 
+_NO_TEXT = "[Claude returned no text content]"
+
+
 def _extract_text(content: Any) -> str:
     """Concatenate text blocks from a final assistant response."""
-    parts = [block.text for block in content if block.type == "text"]
-    return "\n\n".join(parts) if parts else "[Claude returned no text content]"
+    parts = [block.text for block in content if block.type == "text" and block.text.strip()]
+    return "\n\n".join(parts) if parts else _NO_TEXT
 
 
 def _extract_tool_result_text(call_result: Any) -> str:
