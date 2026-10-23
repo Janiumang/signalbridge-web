@@ -29,7 +29,13 @@ Run locally:
 from __future__ import annotations
 
 import asyncio
+import collections
 import datetime
+import hashlib
+import ipaddress
+import secrets
+import time
+import uuid
 import logging
 import re
 import os
@@ -72,6 +78,13 @@ def _config(name: str, default: Any = None) -> Any:
 OWNER_API_KEY: str = _config("ANTHROPIC_API_KEY", "") or ""
 MODEL: str = _config("SIGNALBRIDGE_MODEL", DEFAULT_MODEL) or DEFAULT_MODEL
 SESSION_QUESTION_LIMIT: int = int(_config("SESSION_QUESTION_LIMIT", 10))
+# Free questions per visitor (anonymised IP) per rolling 24 hours. Survives
+# page refreshes and new tabs; defaults to the old per-session number.
+VISITOR_QUESTION_LIMIT: int = int(_config("VISITOR_QUESTION_LIMIT", SESSION_QUESTION_LIMIT))
+VISITOR_WINDOW_SECONDS = 24 * 60 * 60
+# Salt for hashing IPs. Set IP_HASH_SALT in secrets to keep hashes stable
+# across restarts; otherwise a random per-process salt is used.
+_IP_SALT: str = str(_config("IP_HASH_SALT", "") or secrets.token_hex(16))
 DAILY_QUESTION_LIMIT: int = int(_config("DAILY_QUESTION_LIMIT", 200))
 
 # Forwarded to the MCP server subprocess (see mcp_client.py).
@@ -107,6 +120,103 @@ def _increment_daily() -> None:
         if c["date"] != _today():
             c["date"], c["count"] = _today(), 0
         c["count"] += 1
+
+
+# ---------------------------------------------------------------------------
+# Per-visitor rolling 24-hour limit (anonymised IP)
+# ---------------------------------------------------------------------------
+
+def client_ip_from(headers: Any, direct_ip: str | None) -> str | None:
+    """Best guess at the visitor's real IP.
+
+    X-Forwarded-For is "client, proxy1, proxy2"; a visitor can forge the
+    LEFT part, but each trusted proxy appends what it actually saw. So take
+    the right-most public address. Falls back to the socket address.
+    """
+    xff = ""
+    try:
+        xff = headers.get("X-Forwarded-For") or headers.get("x-forwarded-for") or ""
+    except Exception:
+        xff = ""
+    for part in reversed([p.strip() for p in xff.split(",") if p.strip()]):
+        try:
+            addr = ipaddress.ip_address(part)
+        except ValueError:
+            continue
+        if addr.is_global:
+            return str(addr)
+    if direct_ip:
+        try:
+            if ipaddress.ip_address(direct_ip).is_global:
+                return direct_ip
+        except ValueError:
+            pass
+    return None
+
+
+def visitor_key() -> str:
+    """Salted hash of the visitor's IP; per-session id if no IP is known."""
+    ip = None
+    try:
+        ip = client_ip_from(st.context.headers, getattr(st.context, "ip_address", None))
+    except Exception:
+        ip = None
+    if ip:
+        return "ip:" + hashlib.sha256((_IP_SALT + ip).encode()).hexdigest()[:32]
+    if "visitor_fallback_id" not in st.session_state:
+        st.session_state.visitor_fallback_id = uuid.uuid4().hex
+    return "session:" + st.session_state.visitor_fallback_id
+
+
+@st.cache_resource
+def _visitor_log() -> dict[str, Any]:
+    return {"lock": threading.Lock(), "hits": {}}
+
+
+_MAX_TRACKED_VISITORS = 50_000
+
+
+def _prune(hits: "collections.deque[float]", now: float) -> None:
+    while hits and now - hits[0] >= VISITOR_WINDOW_SECONDS:
+        hits.popleft()
+
+
+def visitor_used(key: str, now: float | None = None) -> int:
+    now = time.time() if now is None else now
+    log = _visitor_log()
+    with log["lock"]:
+        hits = log["hits"].get(key)
+        if not hits:
+            return 0
+        _prune(hits, now)
+        return len(hits)
+
+
+def visitor_resets_at(key: str) -> float | None:
+    log = _visitor_log()
+    with log["lock"]:
+        hits = log["hits"].get(key)
+        return hits[0] + VISITOR_WINDOW_SECONDS if hits else None
+
+
+def record_visitor(key: str, now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    log = _visitor_log()
+    with log["lock"]:
+        hits = log["hits"].setdefault(key, collections.deque())
+        _prune(hits, now)
+        hits.append(now)
+        if len(log["hits"]) > _MAX_TRACKED_VISITORS:  # drop idle visitors
+            for k in [k for k, v in log["hits"].items() if not v or now - v[-1] >= VISITOR_WINDOW_SECONDS]:
+                del log["hits"][k]
+
+
+def _resets_in_words(key: str) -> str:
+    at = visitor_resets_at(key)
+    if not at:
+        return "in 24 hours"
+    mins = max(1, int((at - time.time()) // 60))
+    return f"in about {mins // 60} h {mins % 60} min" if mins >= 60 else f"in about {mins} min"
 
 
 # ---------------------------------------------------------------------------
@@ -189,10 +299,12 @@ def _limit_message() -> str | None:
             "The free tier isn't configured on this server. Add your own "
             "Anthropic API key in the sidebar to chat."
         )
-    if st.session_state.questions_asked >= SESSION_QUESTION_LIMIT:
+    key = visitor_key()
+    if visitor_used(key) >= VISITOR_QUESTION_LIMIT:
         return (
-            f"You've used all {SESSION_QUESTION_LIMIT} free questions for this "
-            "session. Add your own Anthropic API key in the sidebar to keep going."
+            f"You've used all {VISITOR_QUESTION_LIMIT} free questions for the last 24 hours. "
+            f"Your next free question opens {_resets_in_words(key)}, or add your own "
+            "Anthropic API key in the sidebar to keep going."
         )
     if _daily_used() >= DAILY_QUESTION_LIMIT:
         return (
@@ -212,8 +324,8 @@ def render_status(slot: Any) -> None:
     if _using_own_key():
         slot.success("Using your own API key - no question limit.")
     elif OWNER_API_KEY:
-        remaining = max(0, SESSION_QUESTION_LIMIT - st.session_state.questions_asked)
-        slot.info(f"Free tier: {remaining} of {SESSION_QUESTION_LIMIT} questions left this session.")
+        remaining = max(0, VISITOR_QUESTION_LIMIT - visitor_used(visitor_key()))
+        slot.info(f"Free tier: {remaining} of {VISITOR_QUESTION_LIMIT} questions left in the last 24 hours.")
 
 
 def render_sidebar() -> Any:
@@ -259,6 +371,8 @@ def render_sidebar() -> Any:
             "connectors. Uses only public openFDA data. MIT licensed."
         )
         st.caption(
+            "Free-tier limits use an anonymised hash of your IP address, kept "
+            "in memory for 24 hours and never logged. "
             "Not a validated pharmacovigilance system. FAERS counts and "
             "disproportionality statistics are signals for review, not "
             "evidence of causality."
@@ -349,6 +463,7 @@ def handle_user_input(text: str) -> None:
 
     if not _using_own_key():
         st.session_state.questions_asked += 1
+        record_visitor(visitor_key())
         _increment_daily()
 
     st.session_state.messages.append(
