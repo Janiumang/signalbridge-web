@@ -213,10 +213,27 @@ def test_rejected_tool_choice_is_retried_without_it(fake_llm):
     assert answer == "final" and "tool_choice" not in real_create_calls[-1]
 
 
-def test_gate_sees_previous_question_for_follow_ups(fake_llm):
-    llm = fake_llm([reply([tool_use("t1", "ping")], "tool_use"), reply([text("ok")], "end_turn")])
+def test_follow_up_in_a_drug_conversation_skips_the_gate(fake_llm):
+    llm = fake_llm([reply([tool_use("t1", "calculate_reporting_odds_ratio")], "tool_use"), reply([text("ROR ...")], "end_turn")])
+    llm.gate_answer = "no"   # even a gate that would wrongly refuse is not consulted
     history = [{"role": "user", "content": "Adverse events in men 30-40 for Ozempic"},
                {"role": "assistant", "content": "# Results\nTop reactions..."}]
-    run("Rune ROR for anxiety but do seaprate suspect vs concomitant", history)
-    sent = llm.gate_requests[0]["messages"][0]["content"]
-    assert "Ozempic" in sent and "When in doubt, say yes" in llm.gate_requests[0]["system"]
+    answer, log, _ = run("Run ROR, also age-wise separation for anxiety. Suspect vs concomitant?", history)
+    assert answer == "ROR ..." and llm.gate_requests == [] and log
+
+
+def test_gate_still_checks_after_only_refusals(fake_llm):
+    llm = fake_llm([])
+    llm.gate_answer = "no"
+    history = [{"role": "user", "content": "Meta stock"}, {"role": "assistant", "content": chat.OUT_OF_SCOPE_REPLY}]
+    answer, _, _ = run("Now tell me about Tesla", history)
+    assert answer == chat.OUT_OF_SCOPE_REPLY and len(llm.gate_requests) == 1
+
+
+def test_gate_prompt_is_lenient_and_sees_previous_question(fake_llm):
+    llm = fake_llm([])
+    llm.gate_answer = "no"
+    history = [{"role": "user", "content": "Ozempic men 30-40"}, {"role": "assistant", "content": chat.OUT_OF_SCOPE_REPLY}]
+    run("seaprate suspect vs concomitant", history)
+    assert "Ozempic" in llm.gate_requests[0]["messages"][0]["content"]
+    assert "When in doubt, say yes" in llm.gate_requests[0]["system"]

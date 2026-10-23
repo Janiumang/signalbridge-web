@@ -85,6 +85,7 @@ GROUNDING - THE MOST IMPORTANT RULE. Every fact you state about a specific drug,
 - Never write "from memory", "as I recall" or similar - if a fact is not in a tool result, leave it out.
 
 DATA COVERAGE. These tools search FAERS (drugs and therapeutic biologics) through openFDA. Vaccine adverse events, including all COVID-19 vaccines, are reported to VAERS, a separate CDC/FDA system that these tools do not cover - FAERS returns essentially nothing for vaccines. If the user asks about a vaccine, say this plainly first, point them to VAERS (vaers.hhs.gov, searchable via CDC WONDER at wonder.cdc.gov/vaers.html), and offer what FAERS can answer instead. Do not present an empty FAERS result for a vaccine as evidence of safety.
+Suspect vs concomitant: openFDA cannot reliably separate whether a drug was the suspect or a concomitant drug in a report (its search cannot tie the role to the same drug entry), and these tools count any report that lists the drug. If asked to split by role, say so plainly, do not attempt or approximate the split, and offer the standard ROR with that caveat.
 There is no manufacturer pivot. For a "which company" split, search each brand/product name separately (e.g. one call per brand) and compare totals.
 
 If a tool returns an error or empty result, explain it to the user - do not silently work around it. Zero reports is a finding to explain (wrong name, wrong database, or genuinely unreported), not a reason to guess.
@@ -120,7 +121,15 @@ async def run_chat_turn(
     tool_calls_log: list[dict[str, Any]] = []
     usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0}
 
-    if not await _in_scope(client, user_message, history):
+    # The topic gate checks how a conversation STARTS. Once a real drug-safety
+    # answer has been given, follow-ups (often short, misspelled, without the
+    # drug name) skip it; drift is still caught by the scope rule, the
+    # database-first check and the memory filter.
+    in_conversation = any(
+        m.get("role") == "assistant" and m.get("content") not in (OUT_OF_SCOPE_REPLY, "")
+        for m in history
+    )
+    if not in_conversation and not await _in_scope(client, user_message, history):
         return OUT_OF_SCOPE_REPLY, tool_calls_log, usage
 
     async with mcp_session() as session:
