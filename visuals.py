@@ -284,7 +284,7 @@ def _result_summary(name: str, data: Any) -> str:
     return ""
 
 
-_FILTER_KEYS = ("drug_name", "reaction", "min_age", "max_age", "country", "start_date", "end_date")
+_FILTER_KEYS = ("drug_name", "reaction", "min_age", "max_age", "country", "sex", "start_date", "end_date")
 
 
 def _age_label(lo: Any, hi: Any) -> str | None:
@@ -320,6 +320,8 @@ def _frame(tool_calls: list[dict[str, Any]]) -> tuple[list[str], list[str], bool
             chips.append(age.replace("age", "age", 1))
     if len(values["country"]) == 1:
         chips.append(f"country {next(iter(values['country']))}")
+    if len(values["sex"]) == 1:
+        chips.append(f"sex {next(iter(values['sex']))}")
     if len(values["start_date"]) == 1:
         chips.append(f"received ≥ {next(iter(values['start_date']))}")
     if len(values["end_date"]) == 1:
@@ -336,9 +338,11 @@ def _frame(tool_calls: list[dict[str, Any]]) -> tuple[list[str], list[str], bool
         compare.append("compare " + " vs ".join(groups))
     if len(values["country"]) > 1:
         compare.append("compare " + " vs ".join(sorted(values["country"])))
+    if len(values["sex"]) > 1:
+        compare.append("compare " + " vs ".join(sorted(values["sex"])))
 
     def sig(i: dict[str, Any]) -> tuple:
-        return tuple(i.get(k) for k in ("drug_name", "country", "start_date", "end_date"))
+        return tuple(i.get(k) for k in ("drug_name", "country", "sex", "start_date", "end_date"))
 
     consistent = len(tool_calls) > 1 and len({sig(i) for i in inputs}) == 1
     return chips, compare, consistent
@@ -531,6 +535,7 @@ _PIVOT_TITLES = {
     "concomitant_drug": "Most common co-reported drugs",
     "seriousness_subtype": "Seriousness of the reports",
     "year": "Reports per year",
+    "sex": "Reports by patient sex",
 }
 
 
@@ -650,6 +655,8 @@ def _group_label(data: dict[str, Any], vary: set[str]) -> str:
             parts.append("All ages")
     if "country" in vary:
         parts.append(str(f.get("country") or "All countries"))
+    if "sex" in vary:
+        parts.append(str(f.get("sex") or "All patients").capitalize())
     if "dates" in vary:
         parts.append(f"{f.get('start_date') or '…'} to {f.get('end_date') or 'now'}")
     return " · ".join(p for p in parts if p) or "Group"
@@ -673,6 +680,8 @@ def ror_compare_card(datas: list[dict[str, Any]]) -> str:
         vary.add("age")
     if len({fa(d, "country") for d in datas}) > 1:
         vary.add("country")
+    if len({str(fa(d, "sex") or "").lower() for d in datas}) > 1:
+        vary.add("sex")
     if len({(fa(d, "start_date"), fa(d, "end_date")) for d in datas}) > 1:
         vary.add("dates")
 

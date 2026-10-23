@@ -87,3 +87,18 @@ def test_result_cards_order_and_fold():
     cards = visuals.result_cards(calls)
     assert "ROR comparison" in cards[0] or "Stratified ROR" in cards[0]
     assert any("<details" in c for c in cards)
+
+
+def test_sex_compare_labels_and_chips():
+    def with_sex(sex, **kw):
+        d = _ror(**kw)
+        d["filters_applied"] = {**d["filters_applied"], "sex": sex}
+        return d
+    card = visuals.ror_compare_card([with_sex("female"), with_sex("male", ror=1.8, ci_95_lower=1.2, ci_95_upper=2.6)])
+    assert "Female" in _decoded_svgs(card) and "Male" in _decoded_svgs(card)
+    chips, compare, _ = visuals._frame([
+        {"name": "calculate_reporting_odds_ratio", "input": {"drug_name": "x", "sex": "female"}},
+        {"name": "calculate_reporting_odds_ratio", "input": {"drug_name": "x", "sex": "male"}},
+    ])
+    assert any("female vs male" in c for c in compare)
+    assert visuals._PIVOT_TITLES["sex"] == "Reports by patient sex"

@@ -237,3 +237,10 @@ def test_gate_prompt_is_lenient_and_sees_previous_question(fake_llm):
     run("seaprate suspect vs concomitant", history)
     assert "Ozempic" in llm.gate_requests[0]["messages"][0]["content"]
     assert "When in doubt, say yes" in llm.gate_requests[0]["system"]
+
+
+def test_sex_arg_normalised_and_checked():
+    ok, err = chat._check_tool_args({"drug_name": "semaglutide", "sex": " Female "})
+    assert err is None and ok["sex"] == "female"
+    assert chat._check_tool_args({"sex": "F"})[0]["sex"] == "female"
+    assert chat._check_tool_args({"sex": "both"})[1]

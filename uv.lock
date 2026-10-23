@@ -503,8 +503,8 @@ name = "httpcore2"
 version = "2.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11" },
-    { name = "truststore" },
+    { name = "h11", marker = "sys_platform != 'emscripten'" },
+    { name = "truststore", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c0/61/afa9d6b7452f9eca73f73d45324eb0bb52f098fd5e6049bf6b8263be9b4e/httpcore2-2.16.0.tar.gz", hash = "sha256:c72cd0413563b17e1cd8354677dff887466f8ec2551679759e93126534428643", size = 69886, upload-time = "2026-10-21T07:09:45.31Z" }
 wheels = [
@@ -904,15 +904,15 @@ cli = [
 
 [[package]]
 name = "mcp-server-openfda"
-version = "0.2.0"
+version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "mcp", extra = ["cli"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/37/bf/239450841be0418ea609ad1cf63e8781e21dc25cd95b4fb8e599fab140f0/mcp_server_openfda-0.2.0.tar.gz", hash = "sha256:dea97517593d0b029df252d6c62f5d9a95ff4dbb267b114c69620d4590f5efd3", size = 26571, upload-time = "2026-07-24T02:20:53.814Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/53/87358aa93d7df1db4e7d09c4daf4c17836db08051f27c506fee678657cf1/mcp_server_openfda-0.2.1.tar.gz", hash = "sha256:8284b86cb1f8f7be557ff28cde9e847d6bce199567fc9f6f62478cdbdb6e428b", size = 27665, upload-time = "2026-10-23T03:22:07.946Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d3/ad/fab132cecdb744ffa3d073f1f670c3d5d5b8588c68d71185a4ceb7f7615d/mcp_server_openfda-0.2.0-py3-none-any.whl", hash = "sha256:63b67e1ee8955c0f5d62366777efd9635003b18835748420a9dd40d7498fa7d3", size = 30067, upload-time = "2026-07-24T02:20:54.938Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/86/76cd63bcf0240f3fc02f3b24d7e03a9b4f64bb3d821109ae39692d10c9c0/mcp_server_openfda-0.2.1-py3-none-any.whl", hash = "sha256:3a4c87576fde3140c3f226b004198d538270b457daaa2e2af83a7a74fc63d85d", size = 31159, upload-time = "2026-10-23T03:22:06.97Z" },
 ]
 
 [[package]]
@@ -1861,7 +1861,7 @@ requires-dist = [
     { name = "google-auth", specifier = ">=2.40" },
     { name = "gspread", specifier = ">=6.2" },
     { name = "mcp", specifier = ">=1.27.2,<2" },
-    { name = "mcp-server-openfda", specifier = ">=0.2.0" },
+    { name = "mcp-server-openfda", specifier = ">=0.2.1" },
     { name = "streamlit", specifier = ">=1.58.0" },
 ]
 

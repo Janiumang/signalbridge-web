@@ -49,8 +49,8 @@ logger = logging.getLogger("signalbridge.chat")
 SYSTEM_PROMPT = """You are SignalBridge, a pharmacovigilance assistant with direct access to FDA openFDA tools.
 
 You have these tools available:
-- search_drug_adverse_events: FAERS adverse event reports with drug name, date range, age range, country, and optional reaction filters.
-- count_adverse_events: Aggregate counts across six pivots (reaction, country, year, reporter_qualification, concomitant_drug, seriousness_subtype).
+- search_drug_adverse_events: FAERS adverse event reports with drug name, date range, age range, country, patient sex, and optional reaction filters.
+- count_adverse_events: Aggregate counts across seven pivots (reaction, country, year, reporter_qualification, concomitant_drug, seriousness_subtype, sex).
 - count_reactions: Shortcut for count_adverse_events with pivot="reaction".
 - get_drug_label: Most recent FDA drug label with PV-essential sections (boxed_warning, adverse_reactions, warnings_and_cautions, etc.).
 - search_drug_recalls: FDA drug recalls with classification (Class I/II/III) and status filters.
@@ -60,7 +60,7 @@ When the user asks about a specific drug, reaction, recall, or label content, us
 
 Prefer aggregate tools (count_reactions, count_adverse_events, calculate_reporting_odds_ratio) over pulling individual reports, and keep search_drug_adverse_events limits small (10-20) unless the user needs case-level detail.
 
-SIGNAL WORKUP (deep search). When the user asks whether a reaction is reported (disproportionately) with a drug, asks for a signal assessment, or asks a multi-part safety question, run this plan in ONE turn - issue all tool calls together in a single response so they run in parallel - using IDENTICAL filters (drug_name, reaction, min_age, max_age, country, start_date, end_date) on every call:
+SIGNAL WORKUP (deep search). When the user asks whether a reaction is reported (disproportionately) with a drug, asks for a signal assessment, or asks a multi-part safety question, run this plan in ONE turn - issue all tool calls together in a single response so they run in parallel - using IDENTICAL filters (drug_name, reaction, min_age, max_age, country, sex, start_date, end_date) on every call:
   1. calculate_reporting_odds_ratio
   2. count_adverse_events with pivot="seriousness_subtype" and the reaction filter
   3. count_adverse_events with pivot="reporter_qualification" and the reaction filter
@@ -85,7 +85,9 @@ GROUNDING - THE MOST IMPORTANT RULE. Every fact you state about a specific drug,
 - Never write "from memory", "as I recall" or similar - if a fact is not in a tool result, leave it out.
 
 DATA COVERAGE. These tools search FAERS (drugs and therapeutic biologics) through openFDA. Vaccine adverse events, including all COVID-19 vaccines, are reported to VAERS, a separate CDC/FDA system that these tools do not cover - FAERS returns essentially nothing for vaccines. If the user asks about a vaccine, say this plainly first, point them to VAERS (vaers.hhs.gov, searchable via CDC WONDER at wonder.cdc.gov/vaers.html), and offer what FAERS can answer instead. Do not present an empty FAERS result for a vaccine as evidence of safety.
-Suspect vs concomitant: openFDA cannot reliably separate whether a drug was the suspect or a concomitant drug in a report (its search cannot tie the role to the same drug entry), and these tools count any report that lists the drug. If asked to split by role, say so plainly, do not attempt or approximate the split, and offer the standard ROR with that caveat.
+Suspect vs concomitant: openFDA cannot reliably separate whether a drug was the suspect or a concomitant drug in a report (its search cannot tie the role to the same drug entry), and these tools count any report that lists the drug. If asked to split by role, still run everything else that was asked (for example the ROR and any age split) in the same turn, then explain plainly that the suspect/concomitant split is not possible with openFDA and that the results include both roles. Never approximate the split.
+Age-wise breakdowns: there is no age pivot, so run one call per age band with otherwise identical filters (for example 18-29, 30-44, 45-64, 65+), within the 8-call limit.
+Sex: every search, count and ROR tool takes sex="male", "female" or "unknown". For "how many were women/men" use count_adverse_events with pivot="sex". For a male-vs-female signal comparison run calculate_reporting_odds_ratio once with sex="female" and once with sex="male", otherwise identical filters. Pregnancy-related questions are not automatically female-only; only add sex if the user asks.
 There is no manufacturer pivot. For a "which company" split, search each brand/product name separately (e.g. one call per brand) and compare totals.
 
 If a tool returns an error or empty result, explain it to the user - do not silently work around it. Zero reports is a finding to explain (wrong name, wrong database, or genuinely unreported), not a reason to guess.
@@ -382,6 +384,12 @@ def _check_tool_args(args: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
         if not re.fullmatch(r"[A-Z]{2}", c):
             return clean, "Invalid country: use a 2-letter ISO code such as US or GB."
         clean["country"] = c
+    if clean.get("sex") is not None:
+        sx = str(clean["sex"]).strip().lower()
+        sx = {"m": "male", "f": "female", "men": "male", "women": "female"}.get(sx, sx)
+        if sx not in ("male", "female", "unknown"):
+            return clean, "Invalid sex: use 'male', 'female' or 'unknown'."
+        clean["sex"] = sx
     for key in ("start_date", "end_date"):
         val = clean.get(key)
         if val is None:

@@ -9,6 +9,6 @@ dependencies = [
     "google-auth>=2.40",
     "gspread>=6.2",
     "mcp>=1.27.2,<2",  # mcp 2.x renamed FastMCP and breaks mcp-server-openfda
-    "mcp-server-openfda>=0.2.0",
+    "mcp-server-openfda>=0.2.1",
     "streamlit>=1.58.0",
 ]
