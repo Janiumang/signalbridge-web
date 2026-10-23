@@ -211,3 +211,12 @@ def test_rejected_tool_choice_is_retried_without_it(fake_llm):
     finally:
         chat.AsyncAnthropic = orig
     assert answer == "final" and "tool_choice" not in real_create_calls[-1]
+
+
+def test_gate_sees_previous_question_for_follow_ups(fake_llm):
+    llm = fake_llm([reply([tool_use("t1", "ping")], "tool_use"), reply([text("ok")], "end_turn")])
+    history = [{"role": "user", "content": "Adverse events in men 30-40 for Ozempic"},
+               {"role": "assistant", "content": "# Results\nTop reactions..."}]
+    run("Rune ROR for anxiety but do seaprate suspect vs concomitant", history)
+    sent = llm.gate_requests[0]["messages"][0]["content"]
+    assert "Ozempic" in sent and "When in doubt, say yes" in llm.gate_requests[0]["system"]
